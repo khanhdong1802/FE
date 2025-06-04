@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Download, Search } from "lucide-react";
 import { format, subDays, addDays, isSameDay } from "date-fns";
 import vi from "date-fns/locale/vi";
+import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
 
 function TransactionHistoryHeader({
   onTabChange,
@@ -28,7 +30,7 @@ function TransactionHistoryHeader({
         ))}
       </div>
       <div className="flex gap-2">
-        {["Tất cả", "Nạp", "Rút", "Chi tiêu", "Đóng góp"].map((type) => (
+        {["Tất cả", "Nạp", "Chi tiêu"].map((type) => (
           <button
             key={type}
             className={`px-2 py-1 rounded text-xs ${
@@ -47,40 +49,97 @@ function TransactionHistoryHeader({
 }
 
 function TransactionItem({ tx }) {
-  // Xác định loại và màu
-  let bg = "bg-gray-100",
-    text = "text-gray-800",
-    label = "";
+  let bg = "bg-gray-100", // Màu nền mặc định
+    text = "text-gray-800", // Màu chữ mặc định
+    label = tx.transaction_type; // Lấy label mặc định từ type
+
+  // Định dạng số tiền và thêm dấu +/-
+  let amountDisplay = "";
+  if (typeof tx.amount === "number") {
+    if (
+      tx.transaction_type === "income" ||
+      (tx.transaction_type === "contribution" &&
+        !tx.group_id) /* Contribution vào quỹ cá nhân (nếu có) */
+    ) {
+      amountDisplay = `+${tx.amount.toLocaleString()} đ`;
+    } else if (
+      tx.transaction_type === "withdraw" ||
+      tx.transaction_type === "expense" ||
+      tx.transaction_type === "groupExpense" ||
+      (tx.transaction_type === "contribution" &&
+        tx.group_id) /* Contribution vào quỹ nhóm từ cá nhân */
+    ) {
+      amountDisplay = `-${tx.amount.toLocaleString()} đ`;
+    } else {
+      // Trường hợp amount có thể âm hoặc dương không rõ ràng từ type
+      amountDisplay = `${
+        tx.amount > 0 ? "+" : ""
+      }${tx.amount.toLocaleString()} đ`;
+    }
+  }
+
+  // Xác định màu sắc và label cụ thể dựa trên transaction_type
   if (tx.transaction_type === "income") {
-    bg = "bg-green-200/80";
-    text = "text-green-900";
-    label = "Nạp tiền";
-  } else if (tx.transaction_type === "withdraw") {
-    bg = "bg-red-200/80";
-    text = "text-red-900";
-    label = "Rút tiền";
+    bg = "bg-green-100"; // Sử dụng màu nhạt hơn cho nền
+    text = "text-green-700";
+    label = tx.description || "Thu nhập"; // Ưu tiên description
+  } else if (
+    tx.transaction_type === "expense" ||
+    tx.transaction_type === "withdraw"
+  ) {
+    // Gộp "expense" và "withdraw" nếu hiển thị giống nhau
+    bg = "bg-red-100"; // Nền đỏ nhạt
+    text = "text-red-700"; // Chữ đỏ đậm hơn
+    label = tx.description || "Chi tiêu cá nhân";
   } else if (tx.transaction_type === "contribution") {
-    bg = "bg-purple-400/80";
-    text = "text-purple-900";
-    label = "Đóng góp nhóm";
+    // Nếu contribution này là tiền NẠP VÀO NHÓM (từ cá nhân), nó là một khoản chi từ view cá nhân
+    // Nhưng nếu đây là trang lịch sử TẤT CẢ, và bạn muốn phân biệt nó thì cần logic rõ hơn
+    // Giả sử "contribution" trong TransactionHistory là tiền cá nhân nạp vào nhóm
+    bg = "bg-orange-100"; // Ví dụ màu cam cho nạp tiền vào nhóm (chi từ cá nhân)
+    text = "text-orange-700";
+    label = tx.description || "Đóng góp nhóm";
   } else if (tx.transaction_type === "groupExpense") {
-    bg = "bg-blue-200/80";
-    text = "text-blue-900";
-    label = "Chi tiêu nhóm";
+    // Chi tiêu TRỰC TIẾP TỪ QUỸ NHÓM (không ảnh hưởng trực tiếp đến số dư cá nhân đang xem ở đây)
+    // Nếu đang xem tab "Tất cả" hoặc "Nhóm" thì mới thấy rõ vai trò
+    bg = "bg-sky-100"; // Ví dụ màu xanh da trời cho chi tiêu của nhóm
+    text = "text-sky-700";
+    label = tx.description || "Chi tiêu nhóm";
+  } else {
+    // Xử lý các trường hợp không xác định hoặc dựa vào amount nếu cần
+    // Ví dụ: nếu amount âm mà type không rõ, có thể cho màu đỏ
+    if (tx.amount < 0 && !tx.transaction_type) {
+      // Giả sử API có thể trả amount âm
+      bg = "bg-red-100";
+      text = "text-red-700";
+      label = tx.description || "Khoản chi không rõ";
+      amountDisplay = `${tx.amount.toLocaleString()} đ`; // amount đã âm
+    } else {
+      label = tx.description || tx.transaction_type || "Giao dịch khác";
+    }
   }
 
   return (
-    <div className={`mb-3 p-4 rounded-xl shadow-sm ${bg}`}>
-      <div className="flex items-start gap-2">
-        {/* Chấm tròn giờ bên trái */}
-        <div className="flex flex-col items-center mr-2">
+    <div className={`mb-3 p-3 rounded-lg shadow-sm ${bg}`}>
+      {" "}
+      {/* Giảm padding nếu cần */}
+      <div className="flex items-start">
+        {" "}
+        {/* Bỏ gap-2 nếu không cần */}
+        {/* Chấm tròn giờ và thời gian */}
+        <div className="flex flex-col items-center w-16 text-center mr-2">
+          {" "}
+          {/* Cho chiều rộng cố định */}
           <span
-            className={`w-3 h-3 rounded-full block mt-1 ${bg.replace(
-              "/80",
-              ""
-            )}`}
+            className={`w-2.5 h-2.5 rounded-full block mt-1.5 ${
+              // Lấy màu đậm hơn cho chấm tròn, bỏ /80
+              bg.includes("100")
+                ? bg.replace("100", "500")
+                : bg.replace("/80", "")
+            }`}
           ></span>
-          <span className="text-xs text-gray-500 mt-1">
+          <span className="text-xs text-gray-500 mt-1 whitespace-nowrap">
+            {" "}
+            {/* Chống xuống dòng */}
             {tx.transaction_date
               ? new Date(tx.transaction_date).toLocaleTimeString("vi-VN", {
                   hour: "2-digit",
@@ -89,20 +148,32 @@ function TransactionItem({ tx }) {
               : ""}
           </span>
         </div>
-        {/* Nội dung */}
-        <div className="flex-1">
-          <div className={`font-semibold ${text}`}>
-            {tx.user_id?.name || "Không rõ"} - {label}{" "}
-            {tx.amount ? tx.amount.toLocaleString() + " đ" : ""}
+        {/* Nội dung chính của giao dịch */}
+        <div className="flex-1 min-w-0">
+          {" "}
+          {/* Thêm min-w-0 để xử lý overflow text */}
+          <div className={`font-semibold ${text} truncate`}>
+            {" "}
+            {/* Thêm truncate nếu tên dài */}
+            {tx.user_id?.name || "Bạn"} - {label}
           </div>
-          <div className="text-sm text-gray-700">
-            Ghi chú: {tx.description || "Không có"}
+          <div className={`font-bold ${text} text-lg`}>
+            {" "}
+            {/* Tăng cỡ chữ số tiền */}
+            {amountDisplay}
           </div>
-          <div className="text-xs text-gray-600 flex gap-2 mt-1">
-            {tx.category_name && <>📁 {tx.category_name}</>}
-            {tx.group_name && <>🏠 {tx.group_name}</>}
-            {tx.source && <>Nguồn: {tx.source}</>}
-            {tx.target && <>Đích: {tx.target}</>}
+          {/* Thông tin thêm (Category, Group) nếu có */}
+          <div className="text-xs text-gray-500 flex flex-wrap gap-x-2 gap-y-0.5 mt-1">
+            {tx.category_name && (
+              <span className="bg-gray-200 px-1.5 py-0.5 rounded-full">
+                📁 {tx.category_name}
+              </span>
+            )}
+            {tx.group_name && (
+              <span className="bg-gray-200 px-1.5 py-0.5 rounded-full">
+                🏠 {tx.group_name}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -163,9 +234,34 @@ export default function TransactionHistoryPage() {
     days.push(addDays(selectedDate, i));
   }
 
-  // Xuất CSV (giả lập)
+  // Xuất CSV
   const handleExportCSV = () => {
-    alert("Tính năng xuất CSV đang phát triển!");
+    const data = filteredTransactions.map((tx, index) => ({
+      STT: index + 1,
+      Ngày: tx.transaction_date
+        ? new Date(tx.transaction_date).toLocaleString("vi-VN")
+        : "",
+      "Loại Giao dịch": tx.transaction_type,
+      Số_tiền: tx.amount,
+      Mô_tả: tx.description || "",
+      "Trạng thái":
+        tx.status === "approved"
+          ? "Đã duyệt"
+          : tx.status === "pending"
+          ? "Chờ duyệt"
+          : tx.status || "Khác",
+      "Người thực hiện": tx.user_id?.name || "Không rõ",
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "GiaoDich");
+
+    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    saveAs(
+      new Blob([wbout], { type: "application/octet-stream" }),
+      "lich_su_giao_dich.xlsx"
+    );
   };
 
   // Lọc giao dịch theo tab và loại
@@ -173,12 +269,17 @@ export default function TransactionHistoryPage() {
     // Lọc theo tab
     if (tab === "Cá nhân" && tx.group_id) return false;
     if (tab === "Nhóm" && !tx.group_id) return false;
+
     // Lọc theo loại
-    if (
-      typeFilter !== "Tất cả" &&
-      tx.transaction_type !== typeFilter.toLowerCase()
-    )
-      return false;
+    if (typeFilter === "Nạp") {
+      // Chỉ lấy income
+      return tx.transaction_type === "income";
+    }
+    if (typeFilter === "Chi tiêu") {
+      // Lấy expense của cả cá nhân và nhóm
+      return tx.transaction_type === "expense";
+    }
+    // typeFilter === "Tất cả"
     return true;
   });
 
